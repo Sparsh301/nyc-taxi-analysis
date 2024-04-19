@@ -1,4 +1,4 @@
-# Anomaly Detection in Time Series
+# Anomaly Detection in Time Series - NYC Taxi Usage Data
 
 **Instructor:** Dr. Buddhananda Banerjee  
   
