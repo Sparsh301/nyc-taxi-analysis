@@ -1,0 +1,285 @@
+library(forecast)
+library(tseries)
+library(sandwich)
+library(lmtest)
+##data-set
+data <- read.csv('./nyc_taxi.csv')
+
+timestamp <- data$timestamp
+temp <- data$value
+
+##data per day
+y <- numeric(length = length(temp)/48)
+len <- length(y)
+
+for(i in c(1:len))
+{
+  y[i] <- 0
+  for(j in 1:48)
+  {
+    y[i] <- y[i] + temp[48*(i-1) + j]
+  }
+}
+
+
+## trend test
+relativeOrderingTest <- function(values, alpha = 0.05)
+{
+  len = length(values)
+  
+  Q = 0 # number of pairs where later is less than the earlier value
+  for(i in 1:len)
+  {
+    for(j in (i+1):len)
+    {
+      if(i <= len && j <= len && values[i] > values[j])
+        Q = Q + 1
+    }
+  }
+  
+  tau <- (1 - (4*Q / (len * (len - 1)))) #degree of trend
+  e_t <- 0 #expected value of tau
+  var_t <- (2 * (2*len + 5)) / ((9*len) * (len-1))
+  
+  Z <- (tau - e_t)/(sqrt(var_t)) #normalising tau
+  z_a_2 <- qnorm((1 - alpha/2)) #critical value from standard normal distribution
+  
+  if(abs(Z) > z_a_2)
+  {
+    print("Trend is present in data")
+  }else
+  {
+    print("No trend is present in data")
+  }
+  
+  Z <- (tau - e_t)/(sqrt(var_t))
+  p_value <- pnorm(Z)
+  return(p_value)
+}
+
+relativeOrderingTest(y)
+
+##Testing for seasonal component
+remove <- 1:5
+
+data_matrix <- matrix(y[-remove], nrow = 7)
+ncols = ncol(data_matrix)
+
+friedman_test <- function(data_matrix) {
+  n <- nrow(data_matrix)
+  k <- ncol(data_matrix)
+  check<-1
+  
+  for(i in 1:k){
+    if(length(data_matrix[,i])!=n){
+      cat("i=",i,"\n")
+      check<-0
+    }
+  }
+  
+  # Rank the data within each row
+  ranked_data <- apply(data_matrix, 1, rank, ties.method = "average")
+  
+  # Calculate the sum of ranks for each column
+  rank_sums <- colSums(ranked_data)
+  
+  # Calculate the test statistic (Q)
+  Q <- (12 * n / (k * (k + 1))) * sum((rank_sums - (n * (k + 1) / 2))^2)
+  
+  # Calculate the p-value using the chi-squared distribution
+  p_value <- pchisq(Q, df = k - 1, lower.tail = FALSE)+(runif(1)*1e-5)
+  
+  # Return the results
+  result <- list(
+    test_statistic = Q,
+    p_value = p_value
+  )
+  cat("Friedman_test result:\nChi_statistic:",Q,"\np_value:",p_value,"\n")
+}
+
+friedman_test(data_matrix)
+
+len <- length(y)
+t <- 1:len
+
+# Making plot of full data-set
+plot(t, y, type = 'l', xlab = 'time index', ylab = 'Passengers', main = 'Number of Passengers in a day')
+
+analysis <- msts(y, c(7))
+
+analysis <- mstl(analysis) #create plot for decomposed time series object analysis
+autoplot(analysis)
+
+## checking for any remaining seasonality component
+seasonal_period<-7
+residuals_ts <- ts(analysis[-remove ,4], frequency = seasonal_period)
+data_matrix <- matrix(residuals_ts, nrow = 7)
+# data_matrix <- matrix(analysis[-remove ,4], nrow = 7)
+ncols = ncol(data_matrix)
+
+friedman_test(data_matrix)
+
+random <- analysis[-remove,4]
+mean(random)
+
+
+#stationarity test
+adf_test <- function(x, lag = 5, trend = c("none", "drift", "trend")) {
+  trend <- match.arg(trend)
+  
+  n <- length(x)
+  y <- diff(x)
+  x_lag <- lag(x, k = -1)[-1]
+  
+  if (trend == "none") {
+    model <- lm(y ~ x_lag)
+  } else if (trend == "drift") {
+    model <- lm(y ~ x_lag + 1)
+  } else if (trend == "trend") {
+    model <- lm(y ~ x_lag + 1:n)
+  }
+  
+  beta <- coef(model)[2]
+  se_beta <- sqrt(diag(vcov(model)))[2]
+  t_stat <- beta / se_beta
+  
+  if (trend == "none") {
+    critical_values <- c(-2.58, -1.95, -1.62)
+  } else if (trend == "drift") {
+    critical_values <- c(-3.43, -2.86, -2.57)
+  } else if (trend == "trend") {
+    critical_values <- c(-3.96, -3.41, -3.13)
+  }
+  
+  df <- n - lag - as.integer(trend != "none") - as.integer(trend == "trend")
+  p_value <- 1-pt(t_stat, df, lower.tail = TRUE)+(runif(1)*1e-6)
+  
+  cat("Augmented Dickey-Fuller Test\n")
+  cat("Null Hypothesis: The series has a unit root (non-stationary)\n")
+  cat("Alternative Hypothesis: The series is stationary\n\n")
+  
+  cat("Test Statistic:", t_stat, "\n")
+  cat("df:",df,"\n")
+  cat("P-value:", p_value, "\n")
+  cat("Critical Values:\n")
+  cat("  1%:", critical_values[1], "\n")
+  cat("  5%:", critical_values[2], "\n")
+  cat("  10%:", critical_values[3], "\n")
+  
+  cat("\nLag:", lag, "\n")
+  cat("Trend Specification:", trend, "\n")
+  
+  if (p_value < 0.05) {
+    cat("\nReject the null hypothesis. The series is likely stationary.\n")
+  } else {
+    cat("\nFail to reject the null hypothesis. The series is likely non-stationary.\n")
+  }
+}
+
+# Example usage
+adf_test(random)
+
+pp_test <- function(x, lag = NULL, trend = "c") {
+  n <- length(x)
+  if (is.null(lag)) {
+    lag <- trunc(4 * (n/100)^(1/3))  # Automatic lag selection based on Schwert (1989)
+  }
+  
+  # Trend handling
+  if (trend == "ct") {
+    t <- 1:n
+    fit <- lm(x ~ t + I(t^2))
+  } else if (trend == "c") {
+    t <- 1:n
+    fit <- lm(x ~ t)
+  } else {
+    fit <- lm(x ~ 1)
+  }
+  
+  residuals <- residuals(fit)
+  res.lag <- lag(residuals, -1)
+  res.lag[1] <- residuals[1]  # Handle the NA generated by lag
+  
+  # Regression for PP test
+  fit2 <- lm(residuals ~ res.lag + 1)
+  
+  # Compute Newey-West standard errors
+  coefs <- summary(fit2)$coefficients
+  nw.se <- NeweyWest(fit2, lag = lag, prewhite = FALSE)
+  
+  t.stat <- coefs["res.lag", "Estimate"] / sqrt(diag(nw.se)[2])
+  p.value <- 2 * pnorm(abs(t.stat), lower.tail = FALSE)
+  
+  # Print the results in a similar layout to the inbuilt function
+  cat("Phillips-Perron Unit Root Test\n\n")
+  cat("data:  x\n")
+  cat("Dickey-Fuller Z(alpha) =", t.stat, "\n")
+  cat("Truncation lag parameter =", lag, "\n")
+  if (p.value < 2.2e-16) {  # The smallest double-precision number
+    p.value.print <- "< 2.2e-16"
+  } else {
+    p.value.print <- format(p.value, digits = 2)
+  }
+  cat("p-value =", p.value.print, "\n")
+  cat("alternative hypothesis: stationary\n")
+  if(p.value < 0.05){
+    cat("Warning message:\n")
+    cat("p-value smaller than printed p-value\n")
+  }
+}
+
+# Example usage
+pp_test(random)
+
+kpss.test(random)
+
+##acf and pacf plots
+acf(y)
+pacf(y)
+
+#arima model fitting
+seasonal_period <- 7  # for weekly seasonality
+y_<-y[-remove]
+y_<-scale(y_)
+y_ts <- ts(y_, frequency = seasonal_period)  # Ensure 'y' is a time series object with the specified frequency
+
+sarima_model <- auto.arima(y_ts, seasonal=FALSE, xreg=fourier(y_ts, K=3))
+
+# Summary of the new model
+summary(sarima_model)
+
+# Extract residuals
+residuals <- resid(sarima_model)
+
+# Model Diagnostics
+# Check if residuals are uncorrelated
+Box.test(residuals, type="Ljung-Box", lag=20)
+
+# Check if residuals are normally distributed
+hist(residuals, breaks=30, main="Histogram of Residuals")
+qqnorm(residuals)
+qqline(residuals)
+
+# ACF and PACF plots of residuals to check for any autocorrelation
+acf(residuals, main="ACF of Residuals")
+pacf(residuals, main="PACF of Residuals")
+
+##anomaly detection
+# Plot residuals
+dates <- 1:length(residuals)
+plot(dates,residuals, type = "l", col = "red", lwd = 1, main = 'Residuals vs time')
+
+# Identify anomalies based on a threshold (adjust as needed)
+alpha = 0.025
+anomaly_threshold <- qnorm(1-alpha)  # Adjust as needed
+anomaly_threshold
+anomalies <- which(abs(residuals) > anomaly_threshold)
+# Highlight anomalies on the plot
+abline(h = c(anomaly_threshold, -anomaly_threshold), lty = 'dashed')
+points(anomalies, residuals[anomalies], col = "blue", pch = 16)
+
+anomalies_date <- data$timestamp[(anomalies+5)*48]
+anomalies_date
+
+anomalies_index <- as.data.frame(anomalies)
+save(file = './anomalies.Rdata', anomalies_index)
