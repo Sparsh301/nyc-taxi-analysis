@@ -24,7 +24,7 @@ Steps for anomaly detection in our project include:
 ## 3. Experiments and Results
 
 ### New York Taxi Dataset
-This dataset records the number of taxis used from July 2014 to January 2015, with data points every half-hour. We addressed two main questions:
+This dataset records the number of taxis used from January 2014 to January 2015, with data points every half-hour. We addressed two main questions:
 
 #### Problem 1:
 Identify outlier days where taxi usage was abnormally high or low.
